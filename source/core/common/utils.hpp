@@ -101,9 +101,9 @@ static inline void* aligned_mem_alloc(size_t size, size_t align) {
   void* result;
 #if defined(__INTEL_COMPILER)
   result = _mm_malloc(size, align);
-#elif defined(_MSC_VER)
+#elif (_WIN32 && (_MSC_VER > 1300)) || defined (__MINGW64_VERSION_MAJOR)
   result = _aligned_malloc(size, align);
-#elif defined(__MINGW32__) || defined(__MINGW64__)
+#elif defined(__MINGW32__)
   result = __mingw_aligned_malloc(size, align);
 #else
   if (posix_memalign(&result, align, size)) {
@@ -116,9 +116,9 @@ static inline void* aligned_mem_alloc(size_t size, size_t align) {
 static inline void aligned_mem_free(void* ptr) {
 #if defined(__INTEL_COMPILER)
   _mm_free(ptr);
-#elif defined(_MSC_VER)
+#elif (_WIN32 && (_MSC_VER > 1300)) || defined (__MINGW64_VERSION_MAJOR)
   _aligned_free(ptr);
-#elif defined(__MINGW32__) || defined(__MINGW64__)
+#elif defined(__MINGW32__)
   __mingw_aligned_free(ptr);
 #else
   free(ptr);
