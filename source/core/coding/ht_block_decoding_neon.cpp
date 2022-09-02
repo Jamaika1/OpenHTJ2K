@@ -115,7 +115,7 @@ void ht_cleanup_decode(j2k_codeblock *block, const uint8_t &pLSB, const int32_t 
   for (qx = QW; qx >= 2; qx -= 2) {
     // Decoding of significance and EMB patterns and unsigned residual offsets
     vlcval       = VLC_dec.fetch();
-    uint16_t tv0 = dec_table0[(vlcval & 0x7F) + (static_cast<unsigned int>(context << 7))];
+    uint16_t tv0 = dec_table0[(vlcval & 0x7F) + (context << 7)];
     if (context == 0) {
       mel_run -= 2;
       tv0 = (mel_run == -1) ? tv0 : 0;
@@ -133,8 +133,8 @@ void ht_cleanup_decode(j2k_codeblock *block, const uint8_t &pLSB, const int32_t 
     context = (rho0 >> 1) | (rho0 & 1);
 
     // Decoding of significance and EMB patterns and unsigned residual offsets
-    vlcval       = VLC_dec.advance(static_cast<uint8_t>((tv0 & 0x000F) >> 1));
-    uint16_t tv1 = dec_table0[(vlcval & 0x7F) + (static_cast<unsigned int>(context << 7))];
+    vlcval       = VLC_dec.advance((tv0 & 0x000F) >> 1);
+    uint16_t tv1 = dec_table0[(vlcval & 0x7F) + (context << 7)];
     if (context == 0) {
       mel_run -= 2;
       tv1 = (mel_run == -1) ? tv1 : 0;
@@ -155,7 +155,7 @@ void ht_cleanup_decode(j2k_codeblock *block, const uint8_t &pLSB, const int32_t 
     vsigma1      = vtstq_s32(vsigma1, vm);
 
     // calculate context for the next quad
-    context = static_cast<uint16_t>((rho1 >> 1) | (rho1 & 1));
+    context = (rho1 >> 1) | (rho1 & 1);
 
     // UVLC decoding
     vlcval = VLC_dec.advance((tv1 & 0x000F) >> 1);
@@ -178,7 +178,8 @@ void ht_cleanup_decode(j2k_codeblock *block, const uint8_t &pLSB, const int32_t 
     // extract suffixes for quad 0 and 1
     uint32_t len = uvlc_result & 0xF;            // suffix length for 2 quads (up to 10 = 5 + 5)
     uint32_t tmp = vlcval & ((1U << len) - 1U);  // suffix value for 2 quads
-    vlcval       = VLC_dec.advance(len);
+    VLC_dec.advance(len);
+
     uvlc_result >>= 4;
     // quad 0 length
     len = uvlc_result & 0x7;  // quad 0 suffix length
@@ -250,7 +251,7 @@ void ht_cleanup_decode(j2k_codeblock *block, const uint8_t &pLSB, const int32_t 
   if (qx) {
     // Decoding of significance and EMB patterns and unsigned residual offsets
     vlcval       = VLC_dec.fetch();
-    uint16_t tv0 = dec_table0[(vlcval & 0x7F) + (static_cast<unsigned int>(context << 7))];
+    uint16_t tv0 = dec_table0[(vlcval & 0x7F) + (context << 7)];
     if (context == 0) {
       mel_run -= 2;
       tv0 = (mel_run == -1) ? tv0 : 0;
@@ -258,10 +259,10 @@ void ht_cleanup_decode(j2k_codeblock *block, const uint8_t &pLSB, const int32_t 
         mel_run = MEL.get_run();
       }
     }
-    rho0     = (tv0 & 0x00F0) >> 4;
-    emb_k_0  = (tv0 & 0x0F00) >> 8;
-    emb_1_0  = (tv0 & 0xF000) >> 12;
-    *rho_p++ = rho0;
+    rho0    = (tv0 & 0x00F0) >> 4;
+    emb_k_0 = (tv0 & 0x0F00) >> 8;
+    emb_1_0 = (tv0 & 0xF000) >> 12;
+    *rho_p  = rho0;
 
     auto vsigma0 = vdupq_n_u32(rho0);
     vsigma0      = vtstq_s32(vsigma0, vm);
@@ -523,7 +524,8 @@ void ht_cleanup_decode(j2k_codeblock *block, const uint8_t &pLSB, const int32_t 
       // extract suffixes for quad 0 and 1
       uint32_t len = uvlc_result & 0xF;            // suffix length for 2 quads (up to 10 = 5 + 5)
       uint32_t tmp = vlcval & ((1U << len) - 1U);  // suffix value for 2 quads
-      vlcval       = VLC_dec.advance(len);
+      VLC_dec.advance(len);
+
       uvlc_result >>= 4;
       // quad 0 length
       len = uvlc_result & 0x7;  // quad 0 suffix length
@@ -788,8 +790,8 @@ void j2k_codeblock::dequantize(uint8_t ROIshift) const {
         v0 = vmulq_s32(v0, vdupq_n_s32(scale));
         v1 = vmulq_s32(v1, vdupq_n_s32(scale));
         // downshift and convert values from sign-magnitude form to two's complement one
-        v0    = (v0 + (1 << (downshift - 1))) >> downshift;
-        v1    = (v1 + (1 << (downshift - 1))) >> downshift;
+        v0    = vrshrq_n_s32(v0, downshift);  // v0 = (v0 + (1 << (downshift - 1))) >> downshift;
+        v1    = vrshrq_n_s32(v1, downshift);  // v1 = (v1 + (1 << (downshift - 1))) >> downshift;
         vdst0 = vbslq_s32(vreinterpretq_u32_s32(s0), vnegq_s32(v0), v0);
         vdst1 = vbslq_s32(vreinterpretq_u32_s32(s1), vnegq_s32(v1), v1);
         vst1q_s16(dst, vcombine_s16(vmovn_s32(vdst0), vmovn_s32(vdst1)));

@@ -1,4 +1,4 @@
-// Copyright (c) 2019 - 2021, Osamu Watanabe
+// Copyright (c) 2019 - 2022, Osamu Watanabe
 // All rights reserved.
 //
 // Redistribution and use in source and binary forms, with or without
@@ -39,7 +39,7 @@
 //#define ENABLE_SP_MR
 
 // Quantize DWT coefficients and transfer them to codeblock buffer in a form of MagSgn value
-void j2k_codeblock::quantize(uint32_t &or_val) {
+void j2k_codeblock::quantize(uint32_t &or_val) const {
   // TODO: check the way to quantize in terms of precision and reconstruction quality
   float fscale = 1.0f / this->stepsize;
   fscale /= (1 << (FRACBITS));
@@ -52,65 +52,73 @@ void j2k_codeblock::quantize(uint32_t &or_val) {
   const int32_t pshift  = (refsegment) ? 1 : 0;
   const int32_t pLSB    = (refsegment) ? 2 : 1;
 
-  for (uint16_t i = 0; i < static_cast<uint16_t>(height); ++i) {
-    sprec_t *sp        = this->i_samples + i * stride;
-    int32_t *dp        = this->sample_buf.get() + i * blksampl_stride;
-    size_t block_index = (i + 1U) * (blkstate_stride) + 1U;
-    uint8_t *dstblk    = block_states.get() + block_index;
+  const float32x4_t vscale = vdupq_n_f32(fscale);
+  const int32x4_t vpLSB    = vdupq_n_s32(pLSB);
+  const int32x4_t vone32   = vdupq_n_s32(1);
+  const int32x4_t vone16   = vdupq_n_s16(1);
+  int32x4_t vorval         = vdupq_n_s32(0);
 
-    float32x4_t vscale = vdupq_n_f32(fscale);
-    int32x4_t vorval   = vdupq_n_s32(0);
-    int32x4_t vpLSB    = vdupq_n_s32(pLSB);
-    int32x4_t vone     = vdupq_n_s32(1);
+  int32x4_t v0, v1, s0, s1, z0, z1, mask0, mask1;
+  int16x8_t coeff16;
+  uint8x8_t vblkstate;
+
+  sprec_t *sp;
+  int32_t *dp;
+  uint8_t *dstblk;
+  size_t block_index;
+
+  for (uint16_t i = 0; i < static_cast<uint16_t>(height); ++i) {
+    sp          = this->i_samples + i * stride;
+    dp          = this->sample_buf.get() + i * blksampl_stride;
+    block_index = (i + 1U) * (blkstate_stride) + 1U;
+    dstblk      = block_states.get() + block_index;
 
     int16_t len = static_cast<int16_t>(this->size.x);
     for (; len >= 8; len -= 8) {
-      int16x8_t coeff16 = vld1q_s16(sp);
-      int32x4_t v0      = vmovl_s16(vget_low_s16(coeff16));
-      int32x4_t v1      = vmovl_high_s16(coeff16);
+      coeff16 = vld1q_s16(sp);
+      v0      = vmovl_s16(vget_low_s16(coeff16));
+      v1      = vmovl_high_s16(coeff16);
       // Quantization
       v0 = vcvtq_s32_f32(vmulq_f32(vcvtq_f32_s32(v0), vscale));
       v1 = vcvtq_s32_f32(vmulq_f32(vcvtq_f32_s32(v1), vscale));
       // Take sign bit
-      int32x4_t s0 = vandq_s32(vshrq_n_s32(v0, 31), vone);
-      int32x4_t s1 = vandq_s32(vshrq_n_s32(v1, 31), vone);
+      s0 = vandq_s32(vshrq_n_s32(v0, 31), vone32);
+      s1 = vandq_s32(vshrq_n_s32(v1, 31), vone32);
       // Absolute value
-      v0           = vabsq_s32(v0);
-      v1           = vabsq_s32(v1);
-      int32x4_t z0 = vandq_s32(v0, vpLSB);  // only for SigProp and MagRef
-      int32x4_t z1 = vandq_s32(v1, vpLSB);  // only for SigProp and MagRef
+      v0 = vabsq_s32(v0);
+      v1 = vabsq_s32(v1);
+      z0 = vandq_s32(v0, vpLSB);  // only for SigProp and MagRef
+      z1 = vandq_s32(v1, vpLSB);  // only for SigProp and MagRef
       // Down-shift if other than HT Cleanup pass exists
       v0 = v0 >> pshift;
       v1 = v1 >> pshift;
       // Generate masks for sigma
-      int32x4_t mask0 = vcgtzq_s32(v0);
-      int32x4_t mask1 = vcgtzq_s32(v1);
+      mask0 = vcgtzq_s32(v0);
+      mask1 = vcgtzq_s32(v1);
       // Check emptiness of a block
       vorval = vorrq_s32(vorval, v0);
       vorval = vorrq_s32(vorval, v1);
       // Convert two's compliment to MagSgn form
-      int32x4_t vone0 = vandq_s32(mask0, vone);
-      int32x4_t vone1 = vandq_s32(mask1, vone);
-      v0              = vsubq_u32(v0, vone0);
-      v1              = vsubq_u32(v1, vone1);
-      v0              = vshlq_n_s32(v0, 1);
-      v1              = vshlq_n_s32(v1, 1);
-      v0              = vaddq_s32(v0, vandq_s32(s0, mask0));
-      v1              = vaddq_s32(v1, vandq_s32(s1, mask1));
+      v0 = vsubq_u32(v0, vshrq_n_u32(mask0, 31));
+      v1 = vsubq_u32(v1, vshrq_n_u32(mask1, 31));
+      v0 = vshlq_n_s32(v0, 1);
+      v1 = vshlq_n_s32(v1, 1);
+      v0 = vaddq_s32(v0, vandq_s32(s0, mask0));
+      v1 = vaddq_s32(v1, vandq_s32(s1, mask1));
       // Store
       vst1q_s32(dp, v0);
       vst1q_s32(dp + 4, v1);
       sp += 8;
       dp += 8;
       // for Block states
-      uint8x8_t vblkstate = vdup_n_u8(0);
-      vblkstate |= vmovn_s16(vandq_s16(vcombine_s16(vmovn_s32(mask0), vmovn_s32(mask1)), vdupq_n_s16(1)));
+      // vblkstate = vdup_n_u8(0);
+      vblkstate = vmovn_s16(vandq_s16(vcombine_s16(vmovn_s32(mask0), vmovn_s32(mask1)), vone16));
       // bits in lowest bitplane, only for SigProp and MagRef TODO: test this line
-      vblkstate |= vmovn_s16(
-          vshlq_n_s16(vandq_s16(vcombine_s16(vmovn_s32(z0), vmovn_s32(z1)), vdupq_n_s16(1)), SHIFT_SMAG));
+      vblkstate |=
+          vmovn_s16(vshlq_n_s16(vandq_s16(vcombine_s16(vmovn_s32(z0), vmovn_s32(z1)), vone16), SHIFT_SMAG));
       // sign-bits, only for SigProp and MagRef  TODO: test this line
-      vblkstate |= vmovn_s16(
-          vshlq_n_s16(vandq_s16(vcombine_s16(vmovn_s32(s0), vmovn_s32(s1)), vdupq_n_s16(1)), SHIFT_SSGN));
+      vblkstate |=
+          vmovn_s16(vshlq_n_s16(vandq_s16(vcombine_s16(vmovn_s32(s0), vmovn_s32(s1)), vone16), SHIFT_SSGN));
       //      uint8x8_t vblkstate = vget_low_u8(vld1q_u8(dstblk + j));
       //      uint16x8_t vsign = vcltzq_s16(coeff16) >> 15;
       //      uint8x8_t vsmag  = vmovn_u16(vandq_s16(coeff16, vpLSB));
@@ -119,7 +127,7 @@ void j2k_codeblock::quantize(uint32_t &or_val) {
       //      vblkstate |= vssgn << SHIFT_SSGN;
       //      int16x8_t vabsmag     = (vabsq_s16(coeff16) & 0x7FFF) >> pshift;
       //      vzero                 = vorrq_s16(vzero, vabsmag);
-      //      int16x8_t vmasked_one = (vceqzq_s16(vabsmag) ^ 0xFFFF) & vone;
+      //      int16x8_t vmasked_one = (vceqzq_s16(vabsmag) ^ 0xFFFF) & vone32;
       //      vblkstate |= vmovn_u16(vmasked_one);
 
       vst1_u8(dstblk, vblkstate);
@@ -244,18 +252,19 @@ auto make_storage_one = [](uint8_t *ssp0, uint8_t *ssp1, int32_t *sp0, int32_t *
 
 // joint termination of MEL and VLC
 int32_t termMELandVLC(state_VLC_enc &VLC, state_MEL_enc &MEL) {
-  VLC.termVLC();
-  uint8_t MEL_mask, VLC_mask, fuse;
+  uint8_t MEL_mask, VLC_mask, fuse, VLCtmp, VLCbits;
+  VLCtmp   = VLC.Creg & 0xFF;
+  VLCbits  = static_cast<uint8_t>(VLC.ctreg & 0xFF);
   MEL.tmp  = static_cast<uint8_t>(MEL.tmp << MEL.rem);
   MEL_mask = static_cast<uint8_t>((0xFF << MEL.rem) & 0xFF);
-  VLC_mask = static_cast<uint8_t>(0xFF >> (8 - VLC.bits));
+  VLC_mask = static_cast<uint8_t>(0xFF >> (8 - VLCbits));
   if ((MEL_mask | VLC_mask) != 0) {
-    fuse = MEL.tmp | VLC.tmp;
-    if (((((fuse ^ MEL.tmp) & MEL_mask) | ((fuse ^ VLC.tmp) & VLC_mask)) == 0) && (fuse != 0xFF)) {
+    fuse = MEL.tmp | VLCtmp;
+    if (((((fuse ^ MEL.tmp) & MEL_mask) | ((fuse ^ VLCtmp) & VLC_mask)) == 0) && (fuse != 0xFF)) {
       MEL.buf[MEL.pos] = fuse;
     } else {
       MEL.buf[MEL.pos] = MEL.tmp;
-      VLC.buf[VLC.pos] = VLC.tmp;
+      VLC.buf[VLC.pos] = VLCtmp;
       VLC.pos--;  // reverse order
     }
     MEL.pos++;
@@ -373,7 +382,7 @@ int32_t htj2k_cleanup_encode(j2k_codeblock *const block, const uint8_t ROIshift)
     E_p += 4;
     // MEL encoding for the first quad
     if (context == 0) {
-      MEL_encoder.encodeMEL((rho0 != 0));
+      MEL_encoder.encodeMEL(rho0 != 0);
     }
     // calculate u_off values
     Emax_q   = vmaxvq_s32(E0);
@@ -426,21 +435,9 @@ int32_t htj2k_cleanup_encode(j2k_codeblock *const block, const uint8_t ROIshift)
 
     // MEL encoding of the second quad
     if (context == 0) {
-      if (rho1 != 0) {
-        MEL_encoder.encodeMEL(1);
-      } else {
-        if (u_min > 2) {
-          MEL_encoder.encodeMEL(1);
-        } else {
-          MEL_encoder.encodeMEL(0);
-        }
-      }
+      MEL_encoder.encodeMEL((rho1 != 0) | (u_min > 2));
     } else if (uoff_flag) {
-      if (u_min > 2) {
-        MEL_encoder.encodeMEL(1);
-      } else {
-        MEL_encoder.encodeMEL(0);
-      }
+      MEL_encoder.encodeMEL(u_min > 2);
     }
 
     // MagSgn encoding
@@ -505,7 +502,7 @@ int32_t htj2k_cleanup_encode(j2k_codeblock *const block, const uint8_t ROIshift)
     MagSgn_encoder.emitBits(v0, m0, known1_0);
 
     // update rho_line
-    *rho_p++ = rho0;
+    *rho_p = rho0;
   }
 
   /*******************************************************************************************************************/
@@ -522,8 +519,8 @@ int32_t htj2k_cleanup_encode(j2k_codeblock *const block, const uint8_t ROIshift)
 
     // calculate context for the next quad
     context = ((rho1 & 0x4) << 7) | ((rho1 & 0x8) << 6);            // (w | sw) << 9
-    context |= ((rho_p[-1] & 0x8) << 5) | ((rho_p[0] & 0x2) << 7);  // (nw | n) << 8
-    context |= ((rho_p[0] & 0x8) << 7) | ((rho_p[1] & 0x2) << 9);   // (ne | nf) << 10
+    context |= ((rho_p[-1] & 0x8) << 5) | ((rho_p[0] & 0xA) << 7);  // ((nw | n) << 8) | (ne << 10)
+    context |= (rho_p[1] & 0x2) << 9;                               // (nf) << 10
 
     ssp0 = block->block_states.get() + (2U * qy + 1U) * (block->blkstate_stride) + 1U;
     ssp1 = ssp0 + block->blkstate_stride;
@@ -533,7 +530,7 @@ int32_t htj2k_cleanup_encode(j2k_codeblock *const block, const uint8_t ROIshift)
       make_storage(ssp0, ssp1, sp0, sp1, sig0, sig1, v0, v1, E0, E1, rho0, rho1);
       // MEL encoding of the first quad
       if (context == 0) {
-        MEL_encoder.encodeMEL((rho0 != 0));
+        MEL_encoder.encodeMEL(rho0 != 0);
       }
       gamma       = (popcount32((uint32_t)rho0) > 1) ? 1 : 0;
       kappa       = std::max((Emax0 - 1) * gamma, 1);
@@ -556,11 +553,11 @@ int32_t htj2k_cleanup_encode(j2k_codeblock *const block, const uint8_t ROIshift)
 
       // calculate context for the next quad
       context = ((rho0 & 0x4) << 7) | ((rho0 & 0x8) << 6);           // (w | sw) << 9
-      context |= ((rho_p[0] & 0x8) << 5) | ((rho_p[1] & 0x2) << 7);  // (nw | n) << 8
-      context |= ((rho_p[1] & 0x8) << 7) | ((rho_p[2] & 0x2) << 9);  // (ne | nf) << 10
+      context |= ((rho_p[0] & 0x8) << 5) | ((rho_p[1] & 0xA) << 7);  // ((nw | n) << 8) | (ne << 10)
+      context |= (rho_p[2] & 0x2) << 9;                              // (nf) << 10
       // MEL encoding of the second quad
       if (context == 0) {
-        MEL_encoder.encodeMEL((rho1 != 0));
+        MEL_encoder.encodeMEL(rho1 != 0);
       }
       gamma  = (popcount32((uint32_t)rho1) > 1) ? 1 : 0;
       kappa  = std::max((Emax1 - 1) * gamma, 1);
@@ -605,8 +602,8 @@ int32_t htj2k_cleanup_encode(j2k_codeblock *const block, const uint8_t ROIshift)
 
       // calculate context for the next quad
       context = ((rho1 & 0x4) << 7) | ((rho1 & 0x8) << 6);           // (w | sw) << 9
-      context |= ((rho_p[1] & 0x8) << 5) | ((rho_p[2] & 0x2) << 7);  // (nw | n) << 8
-      context |= ((rho_p[2] & 0x8) << 7) | ((rho_p[3] & 0x2) << 9);  // (ne | nf) << 10
+      context |= ((rho_p[1] & 0x8) << 5) | ((rho_p[2] & 0xA) << 7);  // ((nw | n) << 8) | (ne << 10)
+      context |= (rho_p[3] & 0x2) << 9;                              // (nf) << 10
 
       // update rho_line
       *rho_p++ = rho0;
@@ -660,12 +657,13 @@ int32_t htj2k_cleanup_encode(j2k_codeblock *const block, const uint8_t ROIshift)
       MagSgn_encoder.emitBits(v0, m0, known1_0);
 
       // update rho_line
-      *rho_p++ = rho0;
+      *rho_p = rho0;
     }
   }
 
   Pcup = MagSgn_encoder.termMS();
   MEL_encoder.termMEL();
+  VLC_encoder.termVLC();
   Scup = termMELandVLC(VLC_encoder, MEL_encoder);
   memcpy(&fwd_buf[static_cast<size_t>(Pcup)], &rev_buf[0], static_cast<size_t>(Scup));
   Lcup = Pcup + Scup;

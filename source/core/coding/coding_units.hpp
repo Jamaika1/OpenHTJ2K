@@ -1,4 +1,4 @@
-// Copyright (c) 2019 - 2021, Osamu Watanabe
+// Copyright (c) 2019 - 2022, Osamu Watanabe
 // All rights reserved.
 //
 // Redistribution and use in source and binary forms, with or without
@@ -126,7 +126,7 @@ class j2k_codeblock : public j2k_region {
   void update_sample(const uint8_t &symbol, const uint8_t &p, const int16_t &j1, const int16_t &j2) const;
   void update_sign(const int8_t &val, const int16_t &j1, const int16_t &j2) const;
   [[nodiscard]] uint8_t get_sign(const int16_t &j1, const int16_t &j2) const;
-  void quantize(uint32_t &or_val);
+  void quantize(uint32_t &or_val) const;
   uint8_t calc_mbr(int16_t i, int16_t j, uint8_t causal_cond) const;
   void dequantize(uint8_t ROIshift) const;
 };
