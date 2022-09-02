@@ -47,7 +47,7 @@
 //#define ENABLE_SP_MR
 
 // Quantize DWT coefficients and transfer them to codeblock buffer in a form of MagSgn value
-void j2k_codeblock::quantize(uint32_t &or_val) {
+void j2k_codeblock::quantize(uint32_t &or_val) const {
   // TODO: check the way to quantize in terms of precision and reconstruction quality
   float fscale = 1.0f / this->stepsize;
   fscale /= (1 << (FRACBITS));
@@ -60,17 +60,20 @@ void j2k_codeblock::quantize(uint32_t &or_val) {
   const int32_t pshift  = (refsegment) ? 1 : 0;
   const int32_t pLSB    = (refsegment) ? 2 : 1;
 
-  for (uint16_t i = 0; i < static_cast<uint16_t>(height); ++i) {
-    sprec_t *sp        = this->i_samples + i * stride;
-    int32_t *dp        = this->sample_buf.get() + i * blksampl_stride;
-    size_t block_index = (i + 1U) * (blkstate_stride) + 1U;
-    uint8_t *dstblk    = block_states.get() + block_index;
+  const __m256i vpLSB = _mm256_set1_epi32(pLSB);
+  const __m256i vone  = _mm256_set1_epi32(1);
+  const __m256 vscale = _mm256_set1_ps(fscale);
 
-    const __m256i vpLSB = _mm256_set1_epi32(pLSB);
-    const __m256i vone  = _mm256_set1_epi32(1);
-    // const __m256i vabsmask = _mm256_set1_epi32(0x7FFFFFFF);
-    // __m256i vorval         = _mm256_setzero_si256();
-    const __m256 vscale = _mm256_set1_ps(fscale);
+  sprec_t *sp;
+  int32_t *dp;
+  size_t block_index;
+  uint8_t *dstblk;
+  for (uint16_t i = 0; i < static_cast<uint16_t>(height); ++i) {
+    sp          = this->i_samples + i * stride;
+    dp          = this->sample_buf.get() + i * blksampl_stride;
+    block_index = (i + 1U) * (blkstate_stride) + 1U;
+    dstblk      = block_states.get() + block_index;
+
     // simd
     int32_t len = static_cast<int32_t>(this->size.x);
     for (; len >= 16; len -= 16) {
@@ -129,9 +132,6 @@ void j2k_codeblock::quantize(uint32_t &or_val) {
       __m128i v = _mm256_extracti128_si256(v0, 0);
       // _mm256_zeroupper(); // does not work on GCC, TODO: find a solution with __m128i v
       _mm_storeu_si128((__m128i *)dstblk, v);
-      // // Check emptiness of a block
-      // or_val |= *(uint32_t *)dstblk;
-      // or_val |= *(uint32_t *)(dstblk + 4);
       dstblk += 16;
     }
     // process leftover
@@ -248,18 +248,19 @@ auto make_storage_one = [](uint8_t *ssp0, uint8_t *ssp1, int32_t *sp0, int32_t *
 
 // joint termination of MEL and VLC
 int32_t termMELandVLC(state_VLC_enc &VLC, state_MEL_enc &MEL) {
-  VLC.termVLC();
-  uint8_t MEL_mask, VLC_mask, fuse;
+  uint8_t MEL_mask, VLC_mask, fuse, VLCtmp, VLCbits;
+  VLCtmp   = VLC.Creg & 0xFF;
+  VLCbits  = static_cast<uint8_t>(VLC.ctreg & 0xFF);
   MEL.tmp  = static_cast<uint8_t>(MEL.tmp << MEL.rem);
   MEL_mask = static_cast<uint8_t>((0xFF << MEL.rem) & 0xFF);
-  VLC_mask = static_cast<uint8_t>(0xFF >> (8 - VLC.bits));
+  VLC_mask = static_cast<uint8_t>(0xFF >> (8 - VLCbits));
   if ((MEL_mask | VLC_mask) != 0) {
-    fuse = MEL.tmp | VLC.tmp;
-    if (((((fuse ^ MEL.tmp) & MEL_mask) | ((fuse ^ VLC.tmp) & VLC_mask)) == 0) && (fuse != 0xFF)) {
+    fuse = MEL.tmp | VLCtmp;
+    if (((((fuse ^ MEL.tmp) & MEL_mask) | ((fuse ^ VLCtmp) & VLC_mask)) == 0) && (fuse != 0xFF)) {
       MEL.buf[MEL.pos] = fuse;
     } else {
       MEL.buf[MEL.pos] = MEL.tmp;
-      VLC.buf[VLC.pos] = VLC.tmp;
+      VLC.buf[VLC.pos] = VLCtmp;
       VLC.pos--;  // reverse order
     }
     MEL.pos++;
@@ -434,21 +435,9 @@ int32_t htj2k_cleanup_encode(j2k_codeblock *const block, const uint8_t ROIshift)
 
     // MEL encoding of the second quad
     if (context == 0) {
-      if (rho1 != 0) {
-        MEL_encoder.encodeMEL(1);
-      } else {
-        if (u_min > 2) {
-          MEL_encoder.encodeMEL(1);
-        } else {
-          MEL_encoder.encodeMEL(0);
-        }
-      }
+      MEL_encoder.encodeMEL((rho1 != 0) | (u_min > 2));
     } else if (uoff_flag) {
-      if (u_min > 2) {
-        MEL_encoder.encodeMEL(1);
-      } else {
-        MEL_encoder.encodeMEL(0);
-      }
+      MEL_encoder.encodeMEL(u_min > 2);
     }
 
     // MagSgn encoding
@@ -477,6 +466,7 @@ int32_t htj2k_cleanup_encode(j2k_codeblock *const block, const uint8_t ROIshift)
     sp0 += 4;
     sp1 += 4;
   }
+
   if (qx) {
     make_storage_one(ssp0, ssp1, sp0, sp1, sig0, v0, E0, rho0);
     // MEL encoding for the first quad
@@ -518,7 +508,7 @@ int32_t htj2k_cleanup_encode(j2k_codeblock *const block, const uint8_t ROIshift)
     *E_p++ = _mm_extract_epi32(E0, 1);
     *E_p++ = _mm_extract_epi32(E0, 3);
     // update rho_line
-    *rho_p++ = rho0;
+    *rho_p = rho0;
   }
 
   /*******************************************************************************************************************/
@@ -645,6 +635,7 @@ int32_t htj2k_cleanup_encode(j2k_codeblock *const block, const uint8_t ROIshift)
       sp0 += 4;
       sp1 += 4;
     }
+
     if (qx) {
       make_storage_one(ssp0, ssp1, sp0, sp1, sig0, v0, E0, rho0);
       // MEL encoding of the first quad
@@ -690,12 +681,13 @@ int32_t htj2k_cleanup_encode(j2k_codeblock *const block, const uint8_t ROIshift)
       *E_p++ = _mm_extract_epi32(E0, 1);
       *E_p++ = _mm_extract_epi32(E0, 3);
       // update rho_line
-      *rho_p++ = rho0;
+      *rho_p = rho0;
     }
   }
 
   Pcup = MagSgn_encoder.termMS();
   MEL_encoder.termMEL();
+  VLC_encoder.termVLC();
   Scup = termMELandVLC(VLC_encoder, MEL_encoder);
   memcpy(&fwd_buf[static_cast<size_t>(Pcup)], &rev_buf[0], static_cast<size_t>(Scup));
   Lcup = Pcup + Scup;

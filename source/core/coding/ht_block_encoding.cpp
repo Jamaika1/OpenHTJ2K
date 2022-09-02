@@ -42,7 +42,7 @@
 //#define ENABLE_SP_MR
 
 // Quantize DWT coefficients and transfer them to codeblock buffer in a form of MagSgn value
-void j2k_codeblock::quantize(uint32_t &or_val) {
+void j2k_codeblock::quantize(uint32_t &or_val) const {
   // TODO: check the way to quantize in terms of precision and reconstruction quality
   float fscale = 1.0f / this->stepsize;
   fscale /= (1 << (FRACBITS));

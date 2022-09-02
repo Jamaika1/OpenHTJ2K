@@ -209,18 +209,16 @@ class state_MEL_enc;  // forward declaration for friend function "termMELandVLC(
  *******************************************************************************/
 class state_VLC_enc {
  private:
+  uint8_t *const buf;
   uint64_t Creg;
   uint32_t ctreg;
-  uint8_t *const buf;
-  uint8_t tmp;
-  uint8_t last;
-  uint8_t bits;
+  uint32_t last;
   int32_t pos;
 
   friend int32_t termMELandVLC(state_VLC_enc &, state_MEL_enc &);
 
  public:
-  explicit state_VLC_enc(uint8_t *p) : buf(p), tmp(0xF), last(0xFF), bits(4), pos(MAX_Scup - 2) {
+  explicit state_VLC_enc(uint8_t *p) : buf(p), last(0xFF), pos(MAX_Scup - 2) {
     Creg         = 0xF;
     ctreg        = 4;
     buf[pos + 1] = 0xFF;
@@ -239,33 +237,33 @@ class state_VLC_enc {
     uint32_t val        = Creg & 0xFFFFFFFF;
     uint32_t temp, t = 0;
     uint32_t stuff;
-    uint32_t last_byte;
+    uint32_t last_local = last;
 
-    temp      = (val >> bits_local) & 0xFF;
-    stuff     = (last > 0x8F) && ((temp & 0x7F) == 0x7F);
-    last_byte = temp & ((1 << (8 - stuff)) - 1);
-    t |= last_byte << 24;
+    temp       = (val >> bits_local) & 0xFF;
+    stuff      = (last_local > 0x8F) && ((temp & 0x7F) == 0x7F);
+    last_local = temp & ((1 << (8 - stuff)) - 1);
+    t |= last_local << 24;
     bits_local += 8 - stuff;
 
-    temp      = (val >> bits_local) & 0xFF;
-    stuff     = (last_byte > 0x8F) && ((temp & 0x7F) == 0x7F);
-    last_byte = temp & ((1 << (8 - stuff)) - 1);
-    t |= last_byte << 16;
+    temp       = (val >> bits_local) & 0xFF;
+    stuff      = (last_local > 0x8F) && ((temp & 0x7F) == 0x7F);
+    last_local = temp & ((1 << (8 - stuff)) - 1);
+    t |= last_local << 16;
     bits_local += 8 - stuff;
 
-    temp      = (val >> bits_local) & 0xFF;
-    stuff     = (last_byte > 0x8F) && ((temp & 0x7F) == 0x7F);
-    last_byte = temp & ((1 << (8 - stuff)) - 1);
-    t |= last_byte << 8;
+    temp       = (val >> bits_local) & 0xFF;
+    stuff      = (last_local > 0x8F) && ((temp & 0x7F) == 0x7F);
+    last_local = temp & ((1 << (8 - stuff)) - 1);
+    t |= last_local << 8;
     bits_local += 8 - stuff;
 
-    temp      = (val >> bits_local) & 0xFF;
-    stuff     = (last_byte > 0x8F) && ((temp & 0x7F) == 0x7F);
-    last_byte = temp & ((1 << (8 - stuff)) - 1);
-    t |= last_byte << 0;
+    temp       = (val >> bits_local) & 0xFF;
+    stuff      = (last_local > 0x8F) && ((temp & 0x7F) == 0x7F);
+    last_local = temp & ((1 << (8 - stuff)) - 1);
+    t |= last_local << 0;
     bits_local += 8 - stuff;
 
-    last = static_cast<uint8_t>(last_byte);
+    last = last_local;
     Creg >>= bits_local;
     ctreg -= bits_local;
 
@@ -275,22 +273,20 @@ class state_VLC_enc {
 
   FORCE_INLINE void termVLC() {
     while (true) {
-      uint8_t t = Creg & 0x7F;
+      uint32_t t = Creg & 0x7F;
       if ((last > 0x8F) && (t == 0x7F)) {
         if (ctreg < 7) break;
-        last = static_cast<uint8_t>(Creg & 0x7F);
+        last = static_cast<uint32_t>(Creg & 0x7F);
         Creg >>= 7;
         ctreg -= 7;
       } else {
         if (ctreg < 8) break;
-        last = static_cast<uint8_t>(Creg & 0xFF);
+        last = static_cast<uint32_t>(Creg & 0xFF);
         Creg >>= 8;
         ctreg -= 8;
       }
-      buf[pos--] = last;
+      buf[pos--] = static_cast<uint32_t>(last & 0xFF);
     }
-    bits = static_cast<uint8_t>(ctreg & 0xFF);
-    tmp  = Creg & 0xFF;
   }
 };
 
